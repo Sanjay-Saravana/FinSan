@@ -2,52 +2,65 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-const STORAGE_KEY = 'finsan_users_v2';
-const SESSION_KEY = 'finsan_session_v2';
 const categories = ['Housing', 'Food', 'Transport', 'Utilities', 'Healthcare', 'Entertainment', 'Investments', 'Salary', 'Freelance', 'Other'];
+const currencies = ['USD', 'EUR', 'GBP', 'INR', 'JPY', 'CAD', 'AUD'];
 const sections = ['dashboard', 'transactions', 'budgets', 'goals', 'investments', 'import', 'settings'];
 
-const money = (value) => `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const formatMoney = (amount, currency, locale = 'en-US') =>
+  new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: 2 }).format(Number(amount || 0));
 
-const emptyUserData = () => ({
+const createFinance = (currency = 'USD') => ({
+  preferences: { currency, locale: 'en-US', refreshIntervalMs: 30000 },
   transactions: [],
   budgets: {},
   goals: [],
   investments: [],
-  recurring: []
+  recurring: [],
+  snapshots: {}
 });
 
-const parseCSV = (text) => {
+const parseCsvRows = (text) => {
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) return [];
   const headers = lines[0].split(',').map((x) => x.trim().toLowerCase());
   return lines.slice(1).map((line) => {
-    const cells = line.split(',').map((x) => x.trim().replace(/^"|"$/g, ''));
-    return headers.reduce((acc, key, i) => ({ ...acc, [key]: cells[i] || '' }), {});
+    const values = line.split(',').map((x) => x.trim().replace(/^"|"$/g, ''));
+    return headers.reduce((obj, key, i) => ({ ...obj, [key]: values[i] || '' }), {});
   });
 };
 
-const normalizeImportRows = (rows) => rows.map((row) => {
+const normalizeImportedRows = (rows) => rows.map((row) => {
   const amount = Number((row.amount || row.net_amount || row.total || '0').replace(/[^\d.-]/g, ''));
   const typeRaw = `${row.type || row.transaction_type || ''}`.toLowerCase();
   return {
     id: crypto.randomUUID(),
     date: row.date || row.trade_date || row.transaction_date || new Date().toISOString().slice(0, 10),
-    description: row.description || row.symbol || row.details || 'Brokerage import',
+    description: row.description || row.symbol || row.details || 'Imported transaction',
     amount: Math.abs(amount),
-    type: typeRaw.includes('buy') || typeRaw.includes('debit') || amount < 0 ? 'expense' : 'income',
+    type: typeRaw.includes('debit') || typeRaw.includes('buy') || amount < 0 ? 'expense' : 'income',
     category: row.category || 'Other'
   };
 });
 
+async function api(path, options) {
+  const response = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
 export default function FinanceTracker() {
-  const [users, setUsers] = useState([]);
-  const [currentId, setCurrentId] = useState(null);
+  const [user, setUser] = useState(null);
+  const [finance, setFinance] = useState(createFinance());
   const [authMode, setAuthMode] = useState('signin');
   const [activeSection, setActiveSection] = useState('dashboard');
-  const [auth, setAuth] = useState({ email: '', password: '', name: '' });
+  const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
 
+  const [authForm, setAuthForm] = useState({ name: '', email: '', password: '', currency: 'USD' });
   const [transaction, setTransaction] = useState({ date: '', description: '', amount: '', type: 'expense', category: categories[0] });
   const [budget, setBudget] = useState({ category: categories[0], limit: '' });
   const [goal, setGoal] = useState({ title: '', target: '', current: '' });
@@ -55,105 +68,136 @@ export default function FinanceTracker() {
   const [recurring, setRecurring] = useState({ description: '', amount: '', type: 'expense', category: categories[0], frequency: 'monthly' });
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const loaded = raw ? JSON.parse(raw) : [];
-    setUsers(loaded);
-    const session = localStorage.getItem(SESSION_KEY);
-    if (session && loaded.some((u) => u.id === session)) setCurrentId(session);
+    (async () => {
+      try {
+        const session = await api('/api/session');
+        if (session.user) {
+          setUser(session.user);
+          const financeRes = await api('/api/finance');
+          setFinance(financeRes.finance || createFinance());
+        }
+      } catch {
+        setUser(null);
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(users));
-  }, [users]);
+    if (!user || !finance.investments.length) return;
+    const interval = setInterval(() => refreshAllSnapshotPrices(), finance.preferences.refreshIntervalMs || 30000);
+    return () => clearInterval(interval);
+  }, [user, finance.investments.length, finance.preferences.refreshIntervalMs]);
 
-  const currentUser = useMemo(() => users.find((u) => u.id === currentId) || null, [users, currentId]);
+  const saveFinance = async (next) => {
+    setFinance(next);
+    await api('/api/finance', { method: 'PUT', body: JSON.stringify({ finance: next }) });
+  };
 
-  const updateCurrentUser = (updater) => {
-    setUsers((prev) => prev.map((u) => (u.id === currentId ? updater(u) : u)));
+  const updateFinance = async (updater) => {
+    const next = updater(finance);
+    await saveFinance(next);
   };
 
   const dashboard = useMemo(() => {
-    const data = currentUser || emptyUserData();
     const month = new Date().toISOString().slice(0, 7);
-    const monthTx = data.transactions.filter((t) => t.date?.startsWith(month));
+    const monthTx = finance.transactions.filter((t) => t.date?.startsWith(month));
     const income = monthTx.filter((t) => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
     const expenses = monthTx.filter((t) => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
-    const cashflow = data.transactions.reduce((sum, t) => sum + (t.type === 'income' ? t.amount : -t.amount), 0);
-    const portfolio = data.investments.reduce((sum, i) => sum + i.qty * i.price, 0);
-    const spendingByCategory = data.transactions
+    const cashflow = finance.transactions.reduce((sum, t) => sum + (t.type === 'income' ? t.amount : -t.amount), 0);
+    const portfolio = finance.investments.reduce((sum, i) => sum + i.qty * i.price, 0);
+    const categorySpend = finance.transactions
       .filter((t) => t.type === 'expense')
-      .reduce((acc, t) => ({ ...acc, [t.category]: (acc[t.category] || 0) + t.amount }), {});
+      .reduce((map, t) => ({ ...map, [t.category]: (map[t.category] || 0) + t.amount }), {});
 
     return {
       income,
       expenses,
       netWorth: cashflow + portfolio,
-      savingRate: income ? ((income - expenses) / income) * 100 : 0,
-      recent: data.transactions.slice(0, 5),
-      categoryBreakdown: Object.entries(spendingByCategory).sort((a, b) => b[1] - a[1]).slice(0, 6)
+      savingsRate: income ? ((income - expenses) / income) * 100 : 0,
+      recent: finance.transactions.slice(0, 5),
+      categorySpend: Object.entries(categorySpend).sort((a, b) => b[1] - a[1]).slice(0, 6)
     };
-  }, [currentUser]);
+  }, [finance]);
 
-  const submitAuth = (e) => {
+  const onAuthSubmit = async (e) => {
     e.preventDefault();
-    const email = auth.email.trim().toLowerCase();
-    if (!email || !auth.password) return;
-
-    if (authMode === 'signup') {
-      if (users.some((u) => u.email === email)) {
-        setMessage('Email already in use.');
-        return;
-      }
-      const user = { id: crypto.randomUUID(), email, password: auth.password, name: auth.name || email.split('@')[0], ...emptyUserData() };
-      setUsers((prev) => [...prev, user]);
-      localStorage.setItem(SESSION_KEY, user.id);
-      setCurrentId(user.id);
-      setMessage('');
-      return;
-    }
-
-    const existing = users.find((u) => u.email === email && u.password === auth.password);
-    if (!existing) {
-      setMessage('Invalid credentials.');
-      return;
-    }
-    localStorage.setItem(SESSION_KEY, existing.id);
-    setCurrentId(existing.id);
     setMessage('');
+    try {
+      const endpoint = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
+      const res = await api(endpoint, { method: 'POST', body: JSON.stringify(authForm) });
+      setUser(res.user);
+      const financeRes = await api('/api/finance');
+      setFinance(financeRes.finance || createFinance(authForm.currency));
+      setAuthForm({ name: '', email: '', password: '', currency: authForm.currency });
+    } catch (error) {
+      setMessage(error.message);
+    }
   };
 
-  const logout = () => {
-    localStorage.removeItem(SESSION_KEY);
-    setCurrentId(null);
+  const logout = async () => {
+    await api('/api/session', { method: 'DELETE' });
+    setUser(null);
+    setFinance(createFinance());
     setActiveSection('dashboard');
   };
 
-  const addTransaction = (e) => {
-    e.preventDefault();
-    updateCurrentUser((u) => ({ ...u, transactions: [{ ...transaction, id: crypto.randomUUID(), amount: Number(transaction.amount) }, ...u.transactions] }));
-    setTransaction({ date: '', description: '', amount: '', type: 'expense', category: categories[0] });
+  const refreshSnapshot = async (ticker) => {
+    const data = await api(`/api/market/snapshot?symbol=${encodeURIComponent(ticker)}`);
+    return data;
   };
 
-  const importCSVFile = async (file) => {
-    const text = await file.text();
-    const imported = normalizeImportRows(parseCSV(text));
-    updateCurrentUser((u) => ({ ...u, transactions: [...imported, ...u.transactions] }));
-    setMessage(`Imported ${imported.length} rows.`);
-    setActiveSection('transactions');
+  const autofillPrice = async () => {
+    if (!investment.ticker) return;
+    try {
+      const snap = await refreshSnapshot(investment.ticker.toUpperCase());
+      setInvestment((prev) => ({ ...prev, price: String(snap.price) }));
+      setMessage(`Latest ${snap.symbol} price loaded from ${snap.source}.`);
+    } catch {
+      setMessage('Could not fetch current price snapshot.');
+    }
   };
 
-  if (!currentUser) {
+  const refreshAllSnapshotPrices = async () => {
+    if (!finance.investments.length) return;
+    const updates = await Promise.all(
+      finance.investments.map(async (item) => {
+        try {
+          const snap = await refreshSnapshot(item.ticker);
+          return { ...item, price: snap.price, lastSnapshotAt: snap.asOf, source: snap.source };
+        } catch {
+          return item;
+        }
+      })
+    );
+
+    const snapshotMap = updates.reduce((acc, item) => ({
+      ...acc,
+      [item.ticker]: { price: item.price, asOf: item.lastSnapshotAt || new Date().toISOString(), source: item.source || 'cached' }
+    }), finance.snapshots || {});
+
+    await saveFinance({ ...finance, investments: updates, snapshots: snapshotMap });
+    setMessage('Portfolio prices refreshed from snapshots.');
+  };
+
+  if (loading) return <main className="auth-wrap"><div className="card">Loading FinSan…</div></main>;
+
+  if (!user) {
     return (
       <main className="auth-wrap">
-        <form className="card auth-card" onSubmit={submitAuth}>
+        <form className="card auth-card" onSubmit={onAuthSubmit}>
           <h1>FinSan</h1>
-          <p className="muted">Modern finance tracker in Next.js</p>
-          <input type="email" placeholder="Email" required value={auth.email} onChange={(e) => setAuth((v) => ({ ...v, email: e.target.value }))} />
-          <input type="password" placeholder="Password" required minLength={6} value={auth.password} onChange={(e) => setAuth((v) => ({ ...v, password: e.target.value }))} />
-          {authMode === 'signup' && <input type="text" placeholder="Full Name" value={auth.name} onChange={(e) => setAuth((v) => ({ ...v, name: e.target.value }))} />}
-          <button className="primary" type="submit">{authMode === 'signup' ? 'Sign up' : 'Sign in'}</button>
-          <button type="button" className="link" onClick={() => setAuthMode((m) => (m === 'signup' ? 'signin' : 'signup'))}>
-            {authMode === 'signup' ? 'Have an account? Sign in' : 'Need an account? Sign up'}
+          <p className="muted">Professional finance tracker with backend APIs.</p>
+          {authMode === 'signup' && <input placeholder="Full name" value={authForm.name} onChange={(e) => setAuthForm((v) => ({ ...v, name: e.target.value }))} />}
+          <input type="email" placeholder="Email" required value={authForm.email} onChange={(e) => setAuthForm((v) => ({ ...v, email: e.target.value }))} />
+          <input type="password" minLength={6} placeholder="Password" required value={authForm.password} onChange={(e) => setAuthForm((v) => ({ ...v, password: e.target.value }))} />
+          <select value={authForm.currency} onChange={(e) => setAuthForm((v) => ({ ...v, currency: e.target.value }))}>
+            {currencies.map((c) => <option key={c}>{c}</option>)}
+          </select>
+          <button className="primary" type="submit">{authMode === 'signup' ? 'Create Account' : 'Sign In'}</button>
+          <button type="button" className="link" onClick={() => setAuthMode((m) => m === 'signup' ? 'signin' : 'signup')}>
+            {authMode === 'signup' ? 'Already have an account? Sign in' : 'Need an account? Sign up'}
           </button>
           {message && <p className="message">{message}</p>}
         </form>
@@ -161,32 +205,52 @@ export default function FinanceTracker() {
     );
   }
 
+  const currency = finance.preferences.currency || 'USD';
+
   return (
     <div className="shell">
       <aside className="sidebar card">
-        <h2>FinSan</h2>
-        <p className="muted">Hi, {currentUser.name}</p>
+        <div>
+          <h2>FinSan</h2>
+          <p className="muted">Welcome, {user.name}</p>
+        </div>
         <nav>
-          {sections.map((s) => (
-            <button key={s} className={`menu ${activeSection === s ? 'active' : ''}`} onClick={() => setActiveSection(s)}>{s[0].toUpperCase() + s.slice(1)}</button>
+          {sections.map((item) => (
+            <button key={item} className={`menu ${activeSection === item ? 'active' : ''}`} onClick={() => setActiveSection(item)}>
+              {item[0].toUpperCase() + item.slice(1)}
+            </button>
           ))}
         </nav>
         <button className="ghost" onClick={logout}>Logout</button>
       </aside>
 
       <main className="content">
+        <header className="card topbar">
+          <h3>Financial command center</h3>
+          <div className="inline-controls">
+            <label>Currency</label>
+            <select
+              value={currency}
+              onChange={(e) => updateFinance((f) => ({ ...f, preferences: { ...f.preferences, currency: e.target.value } }))}
+            >
+              {currencies.map((c) => <option key={c}>{c}</option>)}
+            </select>
+            <button className="ghost" onClick={refreshAllSnapshotPrices}>Refresh snapshots</button>
+          </div>
+          {message && <p className="message">{message}</p>}
+        </header>
+
         {activeSection === 'dashboard' && (
           <section className="card">
-            <h3>Dashboard</h3>
             <div className="grid metrics">
-              <Metric title="Net Worth" value={money(dashboard.netWorth)} />
-              <Metric title="Monthly Income" value={money(dashboard.income)} />
-              <Metric title="Monthly Expenses" value={money(dashboard.expenses)} />
-              <Metric title="Saving Rate" value={`${Math.max(0, dashboard.savingRate).toFixed(1)}%`} />
+              <Metric title="Net Worth" value={formatMoney(dashboard.netWorth, currency)} />
+              <Metric title="Monthly Income" value={formatMoney(dashboard.income, currency)} />
+              <Metric title="Monthly Expenses" value={formatMoney(dashboard.expenses, currency)} />
+              <Metric title="Savings Rate" value={`${Math.max(0, dashboard.savingsRate).toFixed(1)}%`} />
             </div>
             <div className="grid two">
-              <PanelList title="Recent Transactions" items={dashboard.recent.map((t) => `${t.date} • ${t.description} • ${t.type === 'expense' ? '-' : '+'}${money(t.amount)}`)} />
-              <PanelList title="Expense Breakdown" items={dashboard.categoryBreakdown.map(([k, v]) => `${k}: ${money(v)}`)} />
+              <Panel title="Recent Transactions" rows={dashboard.recent.map((t) => `${t.date} • ${t.description} • ${t.type === 'expense' ? '-' : '+'}${formatMoney(t.amount, currency)}`)} />
+              <Panel title="Expense Breakdown" rows={dashboard.categorySpend.map(([k, v]) => `${k}: ${formatMoney(v, currency)}`)} />
             </div>
           </section>
         )}
@@ -194,110 +258,113 @@ export default function FinanceTracker() {
         {activeSection === 'transactions' && (
           <section className="card">
             <h3>Transactions</h3>
-            <form className="grid" onSubmit={addTransaction}>
-              <input type="date" required value={transaction.date} onChange={(e) => setTransaction((v) => ({ ...v, date: e.target.value }))} />
-              <input placeholder="Description" required value={transaction.description} onChange={(e) => setTransaction((v) => ({ ...v, description: e.target.value }))} />
-              <input type="number" step="0.01" required placeholder="Amount" value={transaction.amount} onChange={(e) => setTransaction((v) => ({ ...v, amount: e.target.value }))} />
+            <form className="grid" onSubmit={async (e) => {
+              e.preventDefault();
+              await updateFinance((f) => ({ ...f, transactions: [{ ...transaction, id: crypto.randomUUID(), amount: Number(transaction.amount) }, ...f.transactions] }));
+              setTransaction({ date: '', description: '', amount: '', type: 'expense', category: categories[0] });
+            }}>
+              <input type="date" value={transaction.date} required onChange={(e) => setTransaction((v) => ({ ...v, date: e.target.value }))} />
+              <input placeholder="Description" value={transaction.description} required onChange={(e) => setTransaction((v) => ({ ...v, description: e.target.value }))} />
+              <input type="number" step="0.01" placeholder="Amount" value={transaction.amount} required onChange={(e) => setTransaction((v) => ({ ...v, amount: e.target.value }))} />
               <select value={transaction.type} onChange={(e) => setTransaction((v) => ({ ...v, type: e.target.value }))}><option value="expense">Expense</option><option value="income">Income</option></select>
               <select value={transaction.category} onChange={(e) => setTransaction((v) => ({ ...v, category: e.target.value }))}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
-              <button className="primary" type="submit">Add</button>
+              <button className="primary">Add</button>
             </form>
-            <div className="list">
-              {currentUser.transactions.map((t) => (
-                <div key={t.id} className="row">
-                  <span>{t.date} • {t.description} • {t.category}</span>
-                  <div>
-                    <strong>{t.type === 'expense' ? '-' : '+'}{money(t.amount)}</strong>
-                    <button className="ghost small" onClick={() => updateCurrentUser((u) => ({ ...u, transactions: u.transactions.filter((x) => x.id !== t.id) }))}>Delete</button>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <div className="list">{finance.transactions.map((t) => <div className="row" key={t.id}><span>{t.date} • {t.description} • {t.category}</span><div><strong>{t.type === 'expense' ? '-' : '+'}{formatMoney(t.amount, currency)}</strong><button className="ghost small" onClick={() => updateFinance((f) => ({ ...f, transactions: f.transactions.filter((x) => x.id !== t.id) }))}>Delete</button></div></div>)}</div>
           </section>
         )}
 
         {activeSection === 'budgets' && (
           <section className="card">
             <h3>Budgets</h3>
-            <form className="grid" onSubmit={(e) => { e.preventDefault(); updateCurrentUser((u) => ({ ...u, budgets: { ...u.budgets, [budget.category]: Number(budget.limit) } })); setBudget({ category: categories[0], limit: '' }); }}>
+            <form className="grid" onSubmit={async (e) => { e.preventDefault(); await updateFinance((f) => ({ ...f, budgets: { ...f.budgets, [budget.category]: Number(budget.limit) } })); setBudget({ category: categories[0], limit: '' }); }}>
               <select value={budget.category} onChange={(e) => setBudget((v) => ({ ...v, category: e.target.value }))}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
-              <input type="number" step="0.01" required placeholder="Monthly limit" value={budget.limit} onChange={(e) => setBudget((v) => ({ ...v, limit: e.target.value }))} />
-              <button className="primary" type="submit">Save Budget</button>
+              <input type="number" step="0.01" value={budget.limit} required onChange={(e) => setBudget((v) => ({ ...v, limit: e.target.value }))} placeholder="Monthly limit" />
+              <button className="primary">Save budget</button>
             </form>
-            <div className="list">
-              {Object.entries(currentUser.budgets).map(([cat, limit]) => {
-                const spent = currentUser.transactions.filter((t) => t.type === 'expense' && t.category === cat).reduce((sum, t) => sum + t.amount, 0);
-                const pct = Math.min(100, (spent / limit) * 100 || 0);
-                return <div className="row" key={cat}><span>{cat}: {money(spent)} / {money(limit)} ({pct.toFixed(1)}%)</span><button className="ghost small" onClick={() => updateCurrentUser((u) => { const next = { ...u.budgets }; delete next[cat]; return { ...u, budgets: next }; })}>Remove</button></div>;
-              })}
-            </div>
+            <div className="list">{Object.entries(finance.budgets).map(([cat, limit]) => {
+              const spent = finance.transactions.filter((t) => t.type === 'expense' && t.category === cat).reduce((sum, t) => sum + t.amount, 0);
+              return <div className="row" key={cat}><span>{cat}: {formatMoney(spent, currency)} / {formatMoney(limit, currency)}</span><button className="ghost small" onClick={() => updateFinance((f) => { const next = { ...f.budgets }; delete next[cat]; return { ...f, budgets: next }; })}>Remove</button></div>;
+            })}</div>
           </section>
         )}
 
         {activeSection === 'goals' && (
           <section className="card">
             <h3>Goals</h3>
-            <form className="grid" onSubmit={(e) => { e.preventDefault(); updateCurrentUser((u) => ({ ...u, goals: [...u.goals, { id: crypto.randomUUID(), title: goal.title, target: Number(goal.target), current: Number(goal.current) }] })); setGoal({ title: '', target: '', current: '' }); }}>
-              <input required placeholder="Goal" value={goal.title} onChange={(e) => setGoal((v) => ({ ...v, title: e.target.value }))} />
-              <input required type="number" step="0.01" placeholder="Target" value={goal.target} onChange={(e) => setGoal((v) => ({ ...v, target: e.target.value }))} />
-              <input required type="number" step="0.01" placeholder="Current" value={goal.current} onChange={(e) => setGoal((v) => ({ ...v, current: e.target.value }))} />
-              <button className="primary">Add Goal</button>
+            <form className="grid" onSubmit={async (e) => { e.preventDefault(); await updateFinance((f) => ({ ...f, goals: [...f.goals, { id: crypto.randomUUID(), title: goal.title, target: Number(goal.target), current: Number(goal.current) }] })); setGoal({ title: '', target: '', current: '' }); }}>
+              <input placeholder="Goal name" value={goal.title} required onChange={(e) => setGoal((v) => ({ ...v, title: e.target.value }))} />
+              <input type="number" step="0.01" placeholder="Target" value={goal.target} required onChange={(e) => setGoal((v) => ({ ...v, target: e.target.value }))} />
+              <input type="number" step="0.01" placeholder="Current" value={goal.current} required onChange={(e) => setGoal((v) => ({ ...v, current: e.target.value }))} />
+              <button className="primary">Add goal</button>
             </form>
-            <div className="list">{currentUser.goals.map((g) => <div className="row" key={g.id}><span>{g.title}: {money(g.current)} / {money(g.target)}</span><button className="ghost small" onClick={() => updateCurrentUser((u) => ({ ...u, goals: u.goals.filter((x) => x.id !== g.id) }))}>Delete</button></div>)}</div>
+            <div className="list">{finance.goals.map((g) => <div className="row" key={g.id}><span>{g.title}: {formatMoney(g.current, currency)} / {formatMoney(g.target, currency)}</span><button className="ghost small" onClick={() => updateFinance((f) => ({ ...f, goals: f.goals.filter((x) => x.id !== g.id) }))}>Delete</button></div>)}</div>
           </section>
         )}
 
         {activeSection === 'investments' && (
           <section className="card">
             <h3>Investments</h3>
-            <form className="grid" onSubmit={(e) => { e.preventDefault(); updateCurrentUser((u) => { const found = u.investments.find((i) => i.ticker === investment.ticker.toUpperCase()); const payload = { id: crypto.randomUUID(), ticker: investment.ticker.toUpperCase(), qty: Number(investment.qty), cost: Number(investment.cost), price: Number(investment.price) }; return found ? { ...u, investments: u.investments.map((i) => (i.ticker === payload.ticker ? { ...i, ...payload } : i)) } : { ...u, investments: [...u.investments, payload] }; }); setInvestment({ ticker: '', qty: '', cost: '', price: '' }); }}>
-              <input required placeholder="Ticker" value={investment.ticker} onChange={(e) => setInvestment((v) => ({ ...v, ticker: e.target.value }))} />
-              <input required type="number" step="0.0001" placeholder="Qty" value={investment.qty} onChange={(e) => setInvestment((v) => ({ ...v, qty: e.target.value }))} />
-              <input required type="number" step="0.01" placeholder="Avg Cost" value={investment.cost} onChange={(e) => setInvestment((v) => ({ ...v, cost: e.target.value }))} />
-              <input required type="number" step="0.01" placeholder="Current Price" value={investment.price} onChange={(e) => setInvestment((v) => ({ ...v, price: e.target.value }))} />
+            <form className="grid" onSubmit={async (e) => { e.preventDefault(); const payload = { id: crypto.randomUUID(), ticker: investment.ticker.toUpperCase(), qty: Number(investment.qty), cost: Number(investment.cost), price: Number(investment.price), lastSnapshotAt: new Date().toISOString() }; await updateFinance((f) => { const exists = f.investments.find((i) => i.ticker === payload.ticker); return exists ? { ...f, investments: f.investments.map((i) => i.ticker === payload.ticker ? { ...i, ...payload } : i) } : { ...f, investments: [...f.investments, payload] }; }); setInvestment({ ticker: '', qty: '', cost: '', price: '' }); }}>
+              <input placeholder="Ticker" value={investment.ticker} required onChange={(e) => setInvestment((v) => ({ ...v, ticker: e.target.value.toUpperCase() }))} />
+              <input type="number" step="0.0001" placeholder="Quantity" value={investment.qty} required onChange={(e) => setInvestment((v) => ({ ...v, qty: e.target.value }))} />
+              <input type="number" step="0.01" placeholder="Avg cost" value={investment.cost} required onChange={(e) => setInvestment((v) => ({ ...v, cost: e.target.value }))} />
+              <input type="number" step="0.01" placeholder="Current price" value={investment.price} required onChange={(e) => setInvestment((v) => ({ ...v, price: e.target.value }))} />
+              <button type="button" className="ghost" onClick={autofillPrice}>Autofill price</button>
               <button className="primary">Save</button>
             </form>
-            <div className="list">{currentUser.investments.map((i) => { const pl = (i.price - i.cost) * i.qty; return <div className="row" key={i.id}><span>{i.ticker} • Qty {i.qty} • Value {money(i.qty * i.price)} • P/L <b className={pl >= 0 ? 'profit' : 'loss'}>{money(pl)}</b></span><button className="ghost small" onClick={() => updateCurrentUser((u) => ({ ...u, investments: u.investments.filter((x) => x.id !== i.id) }))}>Delete</button></div>; })}</div>
+            <div className="list">{finance.investments.map((i) => {
+              const pl = (i.price - i.cost) * i.qty;
+              return <div className="row" key={i.id}><span>{i.ticker} • Qty {i.qty} • Value {formatMoney(i.qty * i.price, currency)} • P/L <b className={pl >= 0 ? 'profit' : 'loss'}>{formatMoney(pl, currency)}</b> • Updated {i.lastSnapshotAt ? new Date(i.lastSnapshotAt).toLocaleString() : '—'}</span><button className="ghost small" onClick={() => updateFinance((f) => ({ ...f, investments: f.investments.filter((x) => x.id !== i.id) }))}>Delete</button></div>;
+            })}</div>
           </section>
         )}
 
         {activeSection === 'import' && (
           <section className="card">
             <h3>Brokerage Import</h3>
-            <p className="muted">Supports common brokerage exports: date/description/amount or trade_date/symbol/net_amount.</p>
-            <input type="file" accept=".csv" onChange={(e) => e.target.files?.[0] && importCSVFile(e.target.files[0])} />
+            <p className="muted">Upload CSV exported from brokerage apps. Common headers are auto-normalized.</p>
+            <input type="file" accept=".csv" onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const text = await file.text();
+              const rows = normalizeImportedRows(parseCsvRows(text));
+              await updateFinance((f) => ({ ...f, transactions: [...rows, ...f.transactions] }));
+              setMessage(`Imported ${rows.length} transactions successfully.`);
+            }} />
           </section>
         )}
 
         {activeSection === 'settings' && (
           <section className="card">
-            <h3>Recurring Transactions</h3>
-            <form className="grid" onSubmit={(e) => { e.preventDefault(); updateCurrentUser((u) => ({ ...u, recurring: [...u.recurring, { ...recurring, id: crypto.randomUUID(), amount: Number(recurring.amount), lastApplied: null }] })); setRecurring({ description: '', amount: '', type: 'expense', category: categories[0], frequency: 'monthly' }); }}>
-              <input required placeholder="Description" value={recurring.description} onChange={(e) => setRecurring((v) => ({ ...v, description: e.target.value }))} />
-              <input required type="number" step="0.01" placeholder="Amount" value={recurring.amount} onChange={(e) => setRecurring((v) => ({ ...v, amount: e.target.value }))} />
+            <h3>Settings & Recurring</h3>
+            <div className="grid">
+              <label>Snapshot refresh interval (ms)</label>
+              <input type="number" min="5000" step="1000" value={finance.preferences.refreshIntervalMs} onChange={(e) => updateFinance((f) => ({ ...f, preferences: { ...f.preferences, refreshIntervalMs: Number(e.target.value) } }))} />
+            </div>
+            <form className="grid" onSubmit={async (e) => { e.preventDefault(); await updateFinance((f) => ({ ...f, recurring: [...f.recurring, { ...recurring, id: crypto.randomUUID(), amount: Number(recurring.amount), lastApplied: null }] })); setRecurring({ description: '', amount: '', type: 'expense', category: categories[0], frequency: 'monthly' }); }}>
+              <input placeholder="Description" value={recurring.description} required onChange={(e) => setRecurring((v) => ({ ...v, description: e.target.value }))} />
+              <input type="number" step="0.01" placeholder="Amount" value={recurring.amount} required onChange={(e) => setRecurring((v) => ({ ...v, amount: e.target.value }))} />
               <select value={recurring.type} onChange={(e) => setRecurring((v) => ({ ...v, type: e.target.value }))}><option value="expense">Expense</option><option value="income">Income</option></select>
               <select value={recurring.category} onChange={(e) => setRecurring((v) => ({ ...v, category: e.target.value }))}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
               <select value={recurring.frequency} onChange={(e) => setRecurring((v) => ({ ...v, frequency: e.target.value }))}><option value="monthly">Monthly</option><option value="weekly">Weekly</option></select>
               <button className="primary">Add recurring</button>
             </form>
-            <button className="ghost" onClick={() => {
+            <button className="ghost" onClick={async () => {
               const now = new Date();
-              const date = now.toISOString().slice(0, 10);
-              updateCurrentUser((u) => {
+              const today = now.toISOString().slice(0, 10);
+              await updateFinance((f) => {
                 const additions = [];
-                const updated = u.recurring.map((r) => {
+                const recurringUpdated = f.recurring.map((r) => {
                   const diff = r.lastApplied ? Math.floor((now - new Date(r.lastApplied)) / (1000 * 60 * 60 * 24)) : 999;
                   const due = r.frequency === 'weekly' ? diff >= 7 : diff >= 30;
-                  if (due) {
-                    additions.push({ id: crypto.randomUUID(), date, description: `[Recurring] ${r.description}`, amount: r.amount, type: r.type, category: r.category });
-                    return { ...r, lastApplied: date };
-                  }
-                  return r;
+                  if (!due) return r;
+                  additions.push({ id: crypto.randomUUID(), date: today, description: `[Recurring] ${r.description}`, amount: r.amount, type: r.type, category: r.category });
+                  return { ...r, lastApplied: today };
                 });
-                return { ...u, recurring: updated, transactions: [...additions, ...u.transactions] };
+                return { ...f, recurring: recurringUpdated, transactions: [...additions, ...f.transactions] };
               });
             }}>Apply due recurring entries</button>
-            <div className="list">{currentUser.recurring.map((r) => <div className="row" key={r.id}><span>{r.description} • {r.frequency} • {money(r.amount)}</span><button className="ghost small" onClick={() => updateCurrentUser((u) => ({ ...u, recurring: u.recurring.filter((x) => x.id !== r.id) }))}>Delete</button></div>)}</div>
           </section>
         )}
       </main>
@@ -309,6 +376,6 @@ function Metric({ title, value }) {
   return <article className="card metric"><small>{title}</small><h4>{value}</h4></article>;
 }
 
-function PanelList({ title, items }) {
-  return <article className="card"><h4>{title}</h4><div className="list">{items.length ? items.map((item, i) => <div className="row" key={`${item}-${i}`}>{item}</div>) : <div className="row">No data yet.</div>}</div></article>;
+function Panel({ title, rows }) {
+  return <article className="card"><h4>{title}</h4><div className="list">{rows.length ? rows.map((row, i) => <div className="row" key={`${row}-${i}`}>{row}</div>) : <div className="row">No data available yet.</div>}</div></article>;
 }
