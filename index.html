@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FinSan — Smart Finance Tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-logo">₣</span>
+          <div>
+            <h1>FinSan</h1>
+            <p>Finance tracker</p>
+          </div>
+        </div>
+
+        <nav class="menu" id="menu">
+          <button class="menu-item active" data-section="dashboard">Dashboard</button>
+          <button class="menu-item" data-section="transactions">Transactions</button>
+          <button class="menu-item" data-section="budgets">Budgets</button>
+          <button class="menu-item" data-section="goals">Goals</button>
+          <button class="menu-item" data-section="investments">Investments</button>
+          <button class="menu-item" data-section="import">Import</button>
+          <button class="menu-item" data-section="settings">Settings</button>
+        </nav>
+
+        <button id="logoutBtn" class="ghost hidden">Log out</button>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <h2 id="welcomeTitle">Welcome</h2>
+          <p id="welcomeSubtitle">Sign in to continue</p>
+        </header>
+
+        <section id="authSection" class="panel auth-panel visible">
+          <div class="auth-card">
+            <h3 id="authTitle">Sign in</h3>
+            <p class="muted">Use local account credentials.</p>
+            <form id="authForm">
+              <label>Email</label>
+              <input type="email" id="authEmail" required placeholder="name@example.com" />
+              <label>Password</label>
+              <input type="password" id="authPassword" required minlength="6" placeholder="••••••••" />
+              <div id="signupOnly" class="hidden">
+                <label>Full name</label>
+                <input type="text" id="authName" placeholder="Alex Morgan" />
+              </div>
+              <button type="submit" class="primary" id="authSubmit">Sign in</button>
+            </form>
+            <button id="toggleAuthMode" class="link">Need an account? Sign up</button>
+            <p id="authMessage" class="message"></p>
+          </div>
+        </section>
+
+        <section id="appSection" class="hidden">
+          <div id="dashboard" class="section-card visible">
+            <div class="metrics-grid">
+              <article class="metric">
+                <h4>Net Worth</h4>
+                <p id="metricNetWorth">$0.00</p>
+              </article>
+              <article class="metric">
+                <h4>Monthly Income</h4>
+                <p id="metricIncome">$0.00</p>
+              </article>
+              <article class="metric">
+                <h4>Monthly Expenses</h4>
+                <p id="metricExpenses">$0.00</p>
+              </article>
+              <article class="metric">
+                <h4>Saving Rate</h4>
+                <p id="metricSavingRate">0%</p>
+              </article>
+            </div>
+            <div class="split-grid">
+              <article class="panel">
+                <h3>Recent Transactions</h3>
+                <ul id="recentTransactions" class="list"></ul>
+              </article>
+              <article class="panel">
+                <h3>Category Breakdown</h3>
+                <ul id="categoryBreakdown" class="list"></ul>
+              </article>
+            </div>
+          </div>
+
+          <div id="transactions" class="section-card hidden">
+            <div class="section-header">
+              <h3>Transactions</h3>
+            </div>
+            <form id="transactionForm" class="form-grid">
+              <input id="tDate" type="date" required />
+              <input id="tDescription" type="text" placeholder="Description" required />
+              <input id="tAmount" type="number" step="0.01" placeholder="Amount" required />
+              <select id="tType">
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
+              </select>
+              <select id="tCategory"></select>
+              <button class="primary" type="submit">Add</button>
+            </form>
+            <table>
+              <thead>
+                <tr><th>Date</th><th>Description</th><th>Category</th><th>Type</th><th>Amount</th><th>Action</th></tr>
+              </thead>
+              <tbody id="transactionTable"></tbody>
+            </table>
+          </div>
+
+          <div id="budgets" class="section-card hidden">
+            <h3>Budgets</h3>
+            <form id="budgetForm" class="form-inline">
+              <select id="bCategory"></select>
+              <input id="bLimit" type="number" step="0.01" placeholder="Monthly limit" required />
+              <button class="primary" type="submit">Set Budget</button>
+            </form>
+            <ul id="budgetList" class="list"></ul>
+          </div>
+
+          <div id="goals" class="section-card hidden">
+            <h3>Financial Goals</h3>
+            <form id="goalForm" class="form-inline">
+              <input id="gTitle" type="text" placeholder="Goal name" required />
+              <input id="gTarget" type="number" step="0.01" placeholder="Target amount" required />
+              <input id="gCurrent" type="number" step="0.01" placeholder="Current saved" required />
+              <button class="primary" type="submit">Add Goal</button>
+            </form>
+            <ul id="goalList" class="list"></ul>
+          </div>
+
+          <div id="investments" class="section-card hidden">
+            <h3>Investments & Portfolio</h3>
+            <form id="investmentForm" class="form-grid">
+              <input id="iTicker" placeholder="Ticker (AAPL)" required />
+              <input id="iQuantity" type="number" step="0.0001" placeholder="Quantity" required />
+              <input id="iCost" type="number" step="0.01" placeholder="Avg Cost" required />
+              <input id="iPrice" type="number" step="0.01" placeholder="Current Price" required />
+              <button class="primary" type="submit">Add / Update</button>
+            </form>
+            <table>
+              <thead>
+                <tr><th>Ticker</th><th>Qty</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>P/L</th><th>Action</th></tr>
+              </thead>
+              <tbody id="investmentTable"></tbody>
+            </table>
+          </div>
+
+          <div id="import" class="section-card hidden">
+            <h3>Brokerage Data Import</h3>
+            <p class="muted">Supports CSV exports from Robinhood, Fidelity, Schwab, and generic formats. Required columns: date, description, amount. Optional: type, category.</p>
+            <input id="csvFile" type="file" accept=".csv" />
+            <button id="importCsvBtn" class="primary">Import CSV</button>
+            <p id="importResult" class="message"></p>
+          </div>
+
+          <div id="settings" class="section-card hidden">
+            <h3>Settings</h3>
+            <div class="panel">
+              <h4>Recurring Transactions</h4>
+              <form id="recurringForm" class="form-grid">
+                <input id="rDescription" placeholder="Description" required />
+                <input id="rAmount" type="number" step="0.01" placeholder="Amount" required />
+                <select id="rType"><option value="expense">Expense</option><option value="income">Income</option></select>
+                <select id="rCategory"></select>
+                <select id="rFrequency">
+                  <option value="monthly">Monthly</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+                <button type="submit" class="primary">Add recurring</button>
+              </form>
+              <ul id="recurringList" class="list"></ul>
+              <button id="applyRecurringBtn" class="ghost">Apply due recurring entries</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
