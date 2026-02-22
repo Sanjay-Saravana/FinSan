@@ -1,32 +1,23 @@
-# FinSan Finance Tracker
+# FinSan (Next.js)
 
-Modern single-page personal finance tracker with:
+A modern finance tracker built with **Next.js App Router**.
 
-- Login / signup (localStorage-backed demo auth)
-- Dashboard with net worth, income, expenses, and savings rate
+## Features
+- Sign up / Sign in / Logout (local demo auth + session persistence)
+- Dashboard metrics (net worth, monthly income/expense, saving rate)
 - Transaction management
-- Budget tracking with progress bars
-- Financial goals tracking
-- Investment portfolio tracking with P/L
-- Recurring transactions automation
-- CSV import for brokerage exports (Robinhood/Fidelity/Schwab/generic mappings)
+- Budget tracking
+- Financial goals
+- Investment portfolio with P/L
+- Recurring transactions
+- Brokerage CSV imports (generic + common export headers)
 
-## Run
-
-Open `index.html` directly or run a static server:
-
+## Run locally
 ```bash
-python3 -m http.server 4173
+npm install
+npm run dev
 ```
+Open `http://localhost:4173`.
 
-Then visit `http://localhost:4173`.
-
-## CSV import format
-
-Supported headers include combinations like:
-
-- `date`, `description`, `amount`, `type`, `category`
-- `trade_date`, `symbol`, `net_amount`, `transaction_type`
-- `transaction_date`, `details`, `total`
-
-The importer normalizes rows to app transactions automatically.
+## Notes
+This is client-side demo persistence via `localStorage`.
